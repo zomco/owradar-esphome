@@ -7,6 +7,7 @@ esphome:
   includes:
     - GP2Y1010AU0F.h
     - LD2410.h
+    - RGBCalc.h
 
 esp32:
   board: esp32dev
@@ -19,10 +20,10 @@ logger:
 # Enable Home Assistant API
 api:
   encryption:
-    key: "IQelU4eI0jJ5illYfyFNbrevlMlGdfQHwclk6QVvH84="
+    key: "0nFrfzxfR86aJlKBz8UJ+I/v9+jzp1Xb8X/6K/iB954="
 
 ota:
-  password: "d8c476d5fdbb69df8d9440b62d4a4d5d"
+  password: "de66b76db75abcfb03ae21314cd950d1"
 
 wifi:
   ssid: !secret wifi_ssid
@@ -30,16 +31,10 @@ wifi:
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: ${upper_devicename} Fallback Hotspot
-    password: "YahhYr4cBM40"
+    ssid: "Env-Monitor Fallback Hotspot"
+    password: "7bqceQpZUOas"
 
 captive_portal:
-
-# esp32_ble_tracker:
-
-# ble_client:
-#   - mac_address: C2:05:12:05:58:5E
-#     id: miband
 
 http_request:
   useragent: esphome/device
@@ -63,17 +58,16 @@ uart:
   baud_rate: 256000
   parity: NONE
   stop_bits: 1
-  # debug:
-  #   direction: BOTH
-  #   dummy_receiver: false
-  #   after:
-  #     delimiter: [0xF8,0xF7,0xF6,0xF5]
 
 custom_component:
   - lambda: |-
       return {new LD2410(id(uart1))};
     components:
       - id: ld2410
+  - lambda: |-
+      return {new RGBCalc()};
+    components:
+      - id: rgbcalc
 
 binary_sensor:    
   - platform: gpio
@@ -118,22 +112,6 @@ switch:
             url: http://admin:th82201806.@192.168.68.232:80/ISAPI/PTZCtrl/channels/1/presets/1/goto
 
 sensor:
-  # - platform: ble_client
-  #   type: characteristic
-  #   ble_client_id: miband
-  #   name: "${upper_devicename} Heart Rate"
-  #   service_uuid: '180d'
-  #   characteristic_uuid: '2a37'
-  #   notify: true
-  #   lambda: |-
-  #     uint16_t hrm = x[1];
-  #     if (x[0] & 1) {
-  #         hrm += (x[2] << 8);
-  #     }
-  #     return (float)hrm;
-  #   unit_of_measurement: 'bpm'
-  #   update_interval: 1s
-
   - platform: custom
     lambda: |-
       auto dust_sensor = new GP2Y1010AU0F();
@@ -164,9 +142,19 @@ sensor:
                   const JsonArray &ter = cols.createNestedArray();
                   static int dust_density_i = 0;
                   seg["id"] = dust_density_i;
-                  int v = x < 64 ? (64 - x) / 64 * 256 : 0;
-                  bg["bri"] = v;
-                  ESP_LOGI("main", "Update %d Dust Density: %d", dust_density_i, v);
+                  rgb_t rgb = {0, 0, 0};
+                  double wave_len = 380 + x / 3.0;
+                  wave_len = wave_len > 780 ? 780 : wave_len;
+                  auto rgb_component = static_cast<RGBCalc *>(rgbcalc);
+                  if (rgb_component->calc(wave_len, &rgb) == 0) {
+                    ESP_LOGI("main", "Convert Wave Length %f To RGB (%d,%d,%d)", wave_len, rgb.r, rgb.g, rgb.b);
+                  } else {
+                    ESP_LOGI("main", "Convert Wave Length %f Failed)", wave_len);
+                  }
+                  bg[0] = rgb.r;
+                  bg[1] = rgb.g;
+                  bg[2] = rgb.b;
+                  ESP_LOGI("main", "Update %d Dust Density: %f, %f", dust_density_i, x, wave_len);
                   dust_density_i += 1;
                   dust_density_i %= 6;
 
@@ -197,7 +185,6 @@ sensor:
                 ESP_LOGI("main", "Update %d Illuminance: %d", illuminance_i, v);
                 illuminance_i += 1;
                 illuminance_i %= 6;
-
 
   - platform: aht10
     temperature:
@@ -232,3 +219,4 @@ sensor:
         id: detect_distance
         unit_of_measurement: "cm"
         accuracy_decimals: 0
+    
