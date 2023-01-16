@@ -69,6 +69,26 @@ custom_component:
     components:
       - id: rgbcalc
 
+globals:
+  - id: temperature_r
+    type: int
+  - id: temperature_g
+    type: int
+  - id: temperature_b
+    type: int
+  - id: dust_density_r
+    type: int
+  - id: dust_density_g
+    type: int
+  - id: dust_density_b
+    type: int
+  - id: humidity_r
+    type: int
+  - id: humidity_g
+    type: int
+  - id: humidity_b
+    type: int
+
 binary_sensor:    
   - platform: gpio
     pin: 
@@ -87,8 +107,11 @@ binary_sensor:
       return {uart_component->hasTarget,uart_component->hasMovingTarget,uart_component->hasStillTarget};
     binary_sensors:
       - name: ${upper_devicename} LD2410 Target
+        id: target
       - name: ${upper_devicename} LD2410 Moving Target
+        id: moving_target
       - name: ${upper_devicename} LD2410 Still Target
+        id: still_target
 
   - platform: gpio
     pin: 23
@@ -134,6 +157,7 @@ sensor:
                           ESP_LOGI("main", "Update Dust Density Response: %d", root["success"].as<bool>());
                       });
               json: |-
+                  if(!id(target).state) return;
                   const JsonArray &segs = root.createNestedArray("seg");
                   const JsonObject &seg = segs.createNestedObject();
                   const JsonArray &cols = seg.createNestedArray("col");
@@ -143,18 +167,29 @@ sensor:
                   static int dust_density_i = 0;
                   seg["id"] = dust_density_i;
                   rgb_t rgb = {0, 0, 0};
-                  double wave_len = 380 + x / 3.0;
+                  // 粉尘密度[0,800]映射到光谱[380,780]
+                  // double wave_len = 380 + x / 2.0;
+                  double wave_len = x / 2.0;
                   wave_len = wave_len > 780 ? 780 : wave_len;
                   auto rgb_component = static_cast<RGBCalc *>(rgbcalc);
-                  if (rgb_component->calc(wave_len, &rgb) == 0) {
-                    ESP_LOGI("main", "Convert Wave Length %f To RGB (%d,%d,%d)", wave_len, rgb.r, rgb.g, rgb.b);
-                  } else {
-                    ESP_LOGI("main", "Convert Wave Length %f Failed)", wave_len);
-                  }
-                  bg[0] = rgb.r;
-                  bg[1] = rgb.g;
-                  bg[2] = rgb.b;
-                  ESP_LOGI("main", "Update %d Dust Density: %f, %f", dust_density_i, x, wave_len);
+                  rgb_component->calc(wave_len, &rgb);
+                  id(dust_density_r) = rgb.r;
+                  id(dust_density_g) = rgb.g;
+                  id(dust_density_b) = rgb.b;
+                  // 设置三种颜色
+                  pri[0] = id(temperature_r);
+                  pri[1] = id(temperature_g);
+                  pri[2] = id(temperature_b);
+                  bg[0] = id(dust_density_r);
+                  bg[1] = id(dust_density_g);
+                  bg[2] = id(dust_density_b);
+                  ter[0] = id(humidity_r);
+                  ter[1] = id(humidity_g);
+                  ter[2] = id(humidity_b);
+                  ESP_LOGI("main", "Update %d Dust Density: %f, Color[[%d,%d,%d],[%d,%d,%d],[%d,%d,%d]]", dust_density_i, x, 
+                    id(temperature_r), id(temperature_g), id(temperature_b),
+                    id(dust_density_r), id(dust_density_g), id(dust_density_b),
+                    id(humidity_r), id(humidity_g), id(humidity_b));
                   dust_density_i += 1;
                   dust_density_i %= 6;
 
@@ -180,19 +215,114 @@ sensor:
                 const JsonObject &seg = segs.createNestedObject();
                 static int illuminance_i = 0;
                 seg["id"] = illuminance_i;
-                int v = x < 64 ? (64 - x) / 64 * 256 : 0;
+                // 亮度[0,63]映射到数值[0,255]
+                int v = id(target).state && x < 64 ? (64 - x) * 4 : 0;
                 seg["bri"] = v;
-                ESP_LOGI("main", "Update %d Illuminance: %d", illuminance_i, v);
+                ESP_LOGI("main", "Update %d Illuminance: %f, Value(%d)", illuminance_i, x, v);
                 illuminance_i += 1;
                 illuminance_i %= 6;
 
   - platform: aht10
-    temperature:
-      name: ${upper_devicename} AHT10 Temperature
-    humidity:
-      name: ${upper_devicename} AHT10 Humidity
     update_interval: 3s
     i2c_id: i2c2
+    temperature:
+      name: ${upper_devicename} AHT10 Temperature
+      on_value:
+        then:
+          - http_request.post:
+              url: http://192.168.68.170/json/state
+              headers:
+                Content-Type: application/json
+              on_response:
+                then:
+                  - lambda: |-
+                      json::parse_json(id(http_request_data).get_string(), [](JsonObject root) {
+                          ESP_LOGI("main", "Update Temperature Response: %d", root["success"].as<bool>());
+                      });
+              json: |-
+                  if(!id(target).state) return;
+                  const JsonArray &segs = root.createNestedArray("seg");
+                  const JsonObject &seg = segs.createNestedObject();
+                  const JsonArray &cols = seg.createNestedArray("col");
+                  const JsonArray &pri = cols.createNestedArray();
+                  const JsonArray &bg = cols.createNestedArray();
+                  const JsonArray &ter = cols.createNestedArray();
+                  static int temperature_i = 0;
+                  seg["id"] = temperature_i;
+                  rgb_t rgb = {0, 0, 0};
+                  // 温度[0,40]映射到光谱[380,780]
+                  double wave_len = 380 + x * 10.0;
+                  wave_len = wave_len > 780 ? 780 : wave_len;
+                  auto rgb_component = static_cast<RGBCalc *>(rgbcalc);
+                  rgb_component->calc(wave_len, &rgb);
+                  id(temperature_r) = rgb.r;
+                  id(temperature_g) = rgb.g;
+                  id(temperature_b) = rgb.b;
+                  // 设置三种颜色
+                  pri[0] = id(temperature_r);
+                  pri[1] = id(temperature_g);
+                  pri[2] = id(temperature_b);
+                  bg[0] = id(dust_density_r);
+                  bg[1] = id(dust_density_g);
+                  bg[2] = id(dust_density_b);
+                  ter[0] = id(humidity_r);
+                  ter[1] = id(humidity_g);
+                  ter[2] = id(humidity_b);
+                  ESP_LOGI("main", "Update %d Temperature: %f, Color[[%d,%d,%d],[%d,%d,%d],[%d,%d,%d]]", temperature_i, x, 
+                    id(temperature_r), id(temperature_g), id(temperature_b),
+                    id(dust_density_r), id(dust_density_g), id(dust_density_b),
+                    id(humidity_r), id(humidity_g), id(humidity_b));
+                  temperature_i += 1;
+                  temperature_i %= 6;
+    humidity:
+      name: ${upper_devicename} AHT10 Humidity
+      on_value:
+        then:
+          - http_request.post:
+              url: http://192.168.68.170/json/state
+              headers:
+                Content-Type: application/json
+              on_response:
+                then:
+                  - lambda: |-
+                      json::parse_json(id(http_request_data).get_string(), [](JsonObject root) {
+                          ESP_LOGI("main", "Update Humidity Response: %d", root["success"].as<bool>());
+                      });
+              json: |-
+                  if(!id(target).state) return;
+                  const JsonArray &segs = root.createNestedArray("seg");
+                  const JsonObject &seg = segs.createNestedObject();
+                  const JsonArray &cols = seg.createNestedArray("col");
+                  const JsonArray &pri = cols.createNestedArray();
+                  const JsonArray &bg = cols.createNestedArray();
+                  const JsonArray &ter = cols.createNestedArray();
+                  static int humidity_i = 0;
+                  seg["id"] = humidity_i;
+                  rgb_t rgb = {0, 0, 0};
+                  // 湿度[0,100]映射到光谱[380,780]
+                  double wave_len = 380 + x * 4.0;
+                  wave_len = wave_len > 780 ? 780 : wave_len;
+                  auto rgb_component = static_cast<RGBCalc *>(rgbcalc);
+                  rgb_component->calc(wave_len, &rgb);
+                  id(humidity_r) = rgb.r;
+                  id(humidity_g) = rgb.g;
+                  id(humidity_b) = rgb.b;
+                  // 设置三种颜色
+                  pri[0] = id(temperature_r);
+                  pri[1] = id(temperature_g);
+                  pri[2] = id(temperature_b);
+                  bg[0] = id(dust_density_r);
+                  bg[1] = id(dust_density_g);
+                  bg[2] = id(dust_density_b);
+                  ter[0] = id(humidity_r);
+                  ter[1] = id(humidity_g);
+                  ter[2] = id(humidity_b);
+                  ESP_LOGI("main", "Update %d Humidity: %f, Color[[%d,%d,%d],[%d,%d,%d],[%d,%d,%d]]", humidity_i, x,
+                    id(temperature_r), id(temperature_g), id(temperature_b),
+                    id(dust_density_r), id(dust_density_g), id(dust_density_b),
+                    id(humidity_r), id(humidity_g), id(humidity_b));
+                  humidity_i += 1;
+                  humidity_i %= 6;
 
   - platform: custom
     lambda: |-
